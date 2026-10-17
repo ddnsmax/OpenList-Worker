@@ -2317,6 +2317,16 @@ export async function resolvePath(virtualPath: string, envCtx?: any) {
         throw new Error("path traversal blocked: illegal '..' segment")
       }
 
+      // Keep the request environment attached only in memory.  Driver
+      // callbacks (credential refreshes) must persist to the same KV/DB
+      // binding that resolved this path, especially on Worker runtimes.
+      try {
+        Object.defineProperty(storage, "__env", {
+          value: envCtx,
+          enumerable: false,
+          configurable: true,
+        })
+      } catch {}
       return {
         storage,
         relative: relPath,

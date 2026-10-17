@@ -11,6 +11,7 @@ import { search } from "../internal/op/search"
 import { checkAdminAuth } from "../pkg/utils"
 import { safeErrorMessage } from "../pkg/errs"
 import { validateHide } from "../pkg/meta"
+import { materializeDaxiangAddition } from "./daxiang_auth"
 import {
   PROXY_RANGE_DRIVERS,
   driverMustProxy,
@@ -131,6 +132,7 @@ export const normalizeDriver = (driverName: string): string => {
   const norm = (driverName || "").toLowerCase().replace(/[^a-z0-9]/g, "")
   // 纯中文驱动名无法归一化为 a-z0-9，先做中文别名匹配
   if ((driverName || "").includes("城通")) return "CtFile"
+  if ((driverName || "").includes("大象")) return "Daxiang"
   if (!norm) return ""
   const available = Object.keys(driverConfigs)
   const matched = available.find(
@@ -141,6 +143,13 @@ export const normalizeDriver = (driverName: string): string => {
   if (matched) return matched
   // Common OpenList aliases
   if (norm.includes("ctfile") || norm === "400gb") return "CtFile"
+  if (
+    norm === "daxiang" ||
+    norm === "daxiangpan" ||
+    norm === "elephantpan" ||
+    norm === "neixin"
+  )
+    return "Daxiang"
   if (norm.startsWith("115")) return "115Open"
   if (norm.startsWith("123")) return "123Pan"
   if (norm.includes("aliyun")) return "AliyundriveOpen"
@@ -291,9 +300,27 @@ adminRouter.post("/storage/create", async (c) => {
   }
 
   const normalizedDriver = normalizeDriver(body.driver)
+  let additionInput: any = body.addition || "{}"
+  if (normalizedDriver === "Daxiang") {
+    try {
+      additionInput = JSON.stringify(
+        await materializeDaxiangAddition(
+          c.env,
+          typeof additionInput === "string"
+            ? JSON.parse(additionInput || "{}")
+            : additionInput,
+        ),
+      )
+    } catch (error: any) {
+      return c.json(
+        { code: 400, message: error?.message || String(error), data: null },
+        400,
+      )
+    }
+  }
   const newAddition = ensureStorageAdditionDeviceId(
     normalizedDriver,
-    body.addition || "{}",
+    additionInput,
   )
 
   const newStorage = {
@@ -408,11 +435,30 @@ adminRouter.post("/storage/update", async (c) => {
   if (idx !== -1) {
     const rawDriver = body.driver || db.storages[idx].driver
     const normalizedDriver = normalizeDriver(rawDriver)
-    const updatedAddition = ensureStorageAdditionDeviceId(
-      normalizedDriver,
+    let additionInput: any =
       body.addition !== undefined
         ? body.addition
-        : db.storages[idx].addition || "{}",
+        : db.storages[idx].addition || "{}"
+    if (normalizedDriver === "Daxiang") {
+      try {
+        additionInput = JSON.stringify(
+          await materializeDaxiangAddition(
+            c.env,
+            typeof additionInput === "string"
+              ? JSON.parse(additionInput || "{}")
+              : additionInput,
+          ),
+        )
+      } catch (error: any) {
+        return c.json(
+          { code: 400, message: error?.message || String(error), data: null },
+          400,
+        )
+      }
+    }
+    const updatedAddition = ensureStorageAdditionDeviceId(
+      normalizedDriver,
+      additionInput,
     )
 
     const updatedStorage = {
@@ -567,6 +613,7 @@ adminRouter.get("/driver/names", (c) => {
       "ProtonDrive",
       "GitHub Releases",
       "CNB Releases",
+      "Daxiang",
     ],
   })
 })
@@ -740,6 +787,57 @@ const COMMON_FIELDS = [
 ]
 
 const driverConfigs: Record<string, any> = {
+  Daxiang: {
+    name: "Daxiang",
+    default_mount_path: "/daxiang",
+    common: COMMON_FIELDS,
+    additional: [
+      {
+        name: "root_folder_path",
+        type: "string",
+        default: "/",
+        required: true,
+      },
+      {
+        name: "api_host",
+        type: "string",
+        default: "https://api.neixin.cn",
+        required: false,
+      },
+      { name: "user_agent", type: "text", default: "", required: false },
+      {
+        name: "keep_alive_minutes",
+        type: "number",
+        default: "3",
+        required: false,
+      },
+      { name: "cookie", type: "text", default: "", required: false },
+      { name: "app_id", type: "string", default: "1", required: false },
+      { name: "ck", type: "text", default: "", required: false },
+      { name: "al", type: "text", default: "", required: false },
+      { name: "uid", type: "string", default: "", required: false },
+      { name: "uuid", type: "string", default: "", required: false },
+      { name: "dx_sign", type: "text", default: "", required: false },
+      { name: "dx_sso", type: "text", default: "", required: false },
+      { name: "auth_session_id", type: "string", default: "", required: false },
+      {
+        name: "credential_updated_at",
+        type: "number",
+        default: "0",
+        required: false,
+      },
+    ],
+    config: {
+      name: "Daxiang",
+      local_sort: true,
+      only_local: false,
+      only_proxy: false,
+      no_cache: true,
+      no_upload: false,
+      need_ms: false,
+      default_root: "/",
+    },
+  },
   AliyundriveOpen: {
     name: "AliyundriveOpen",
     default_mount_path: "/aliyundrive",

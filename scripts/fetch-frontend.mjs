@@ -45,6 +45,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 始终以仓库根目录为基准（无论从哪个 cwd 调用）
 const ROOT = path.resolve(__dirname, "..")
 const DEST = path.join(ROOT, "dist")
+const BUNDLED_FRONTEND = path.join(ROOT, "frontend")
 
 const OFFICIAL_REPO_URL =
   process.env.FRONTEND_GIT_URL ||
@@ -371,6 +372,14 @@ async function main() {
     const src = path.resolve(localDist)
     requireDist(src)
     replaceDist(src)
+    return
+  }
+
+  // Prefer the checked-in frontend fork so the Daxiang login UI and the
+  // Safari 12 legacy target are reproducible without a network fetch.
+  if (fs.existsSync(path.join(BUNDLED_FRONTEND, "package.json"))) {
+    console.log(`  Detected bundled frontend repo: ${BUNDLED_FRONTEND}`)
+    buildLocalRepo(BUNDLED_FRONTEND)
     return
   }
 

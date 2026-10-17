@@ -146,4 +146,9 @@ export interface StoreBackend {
   init?(env?: any): Promise<void>
   /** 健康检查，用于 /debug/info 与 /admin/kv/status。 */
   health?(env?: any): Promise<any>
+  /** Optional namespaced transient records, separate from the configuration tables. */
+  get?(key: string, env?: any): Promise<string | null>
+  put?(key: string, value: string, env?: any): Promise<void>
+  delete?(key: string, env?: any): Promise<void>
+  list?(prefix: string, env?: any): Promise<string[]>
 }

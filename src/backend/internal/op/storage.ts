@@ -96,6 +96,7 @@ import { CFImgBedDriver } from "../../drivers/cloudflare_imgbed/driver"
 import { GuangYaPanDriver } from "../../drivers/guangyapan/driver"
 import { AutoIndexDriver } from "../../drivers/autoindex/driver"
 import { ProtonDriveDriver } from "../../drivers/proton_drive/driver"
+import { DaxiangDriver, normalizeDaxiangAddition } from "../../drivers/daxiang"
 
 // LocalDriver is not available in Cloudflare Workers (no fs module).
 // When running in Node.js container mode, import dynamically on first use.
@@ -1226,6 +1227,45 @@ async function createDriver(
         await saveDb(db)
       } catch (e) {
         console.warn("[GuangYaPan] failed to persist tokens:", e)
+      }
+    })
+    await driver.init?.()
+  } else if (
+    normDriver === "daxiang" ||
+    normDriver === "daxiangpan" ||
+    normDriver === "elephantpan" ||
+    normDriver === "neixin"
+  ) {
+    const addition = normalizeDaxiangAddition(parseAddition(storageConfig))
+    driver = new DaxiangDriver(addition, async (next) => {
+      try {
+        const env = storageConfig?.__env
+        const db = await getDb(env)
+        const accountKey = `${String(addition.api_host || "").toLowerCase()}\0${String(addition.uid || "")}`
+        const st = (db.storages || []).find(
+          (candidate: any) => candidate.id === storageConfig?.id,
+        )
+        if (!st) return
+        for (const candidate of db.storages || []) {
+          if (String(candidate.driver).toLowerCase() !== "daxiang") continue
+          let candidateAddition: any = {}
+          try {
+            candidateAddition = parseAddition(candidate)
+          } catch {}
+          const candidateKey = `${String(candidateAddition.api_host || "").toLowerCase()}\0${String(candidateAddition.uid || "")}`
+          if (candidateKey !== accountKey && candidate.id !== st.id) continue
+          candidate.addition = JSON.stringify({
+            ...candidateAddition,
+            ...next,
+            root_folder_path: candidateAddition.root_folder_path,
+          })
+          candidate.modified = new Date().toISOString()
+          if (storageConfig && storageConfig.id === candidate.id)
+            storageConfig.addition = candidate.addition
+        }
+        await saveDb(db, env)
+      } catch (e) {
+        console.warn("[Daxiang] failed to persist credentials:", e)
       }
     })
     await driver.init?.()

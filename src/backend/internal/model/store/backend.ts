@@ -762,6 +762,10 @@ export async function getStoreBackend(env?: any): Promise<StoreBackend> {
     isConfigured: (e?: any) => driver.isAvailable(e),
     init: (e?: any) => driver.init(e),
     health: (e?: any) => driver.health(e),
+    get: (key: string, e?: any) => driver.get(key, e),
+    put: (key: string, value: string, e?: any) => driver.put(key, value, e),
+    delete: (key: string, e?: any) => driver.delete(key, e),
+    list: (prefix: string, e?: any) => driver.list(prefix, e),
   }
 }
 

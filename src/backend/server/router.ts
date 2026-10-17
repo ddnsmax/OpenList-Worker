@@ -1,7 +1,10 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { getDb, getKvStatus } from "../internal/model/db"
-import { isServerlessRuntime, NO_STORAGE_MESSAGE } from "../internal/model/store/backend"
+import {
+  isServerlessRuntime,
+  NO_STORAGE_MESSAGE,
+} from "../internal/model/store/backend"
 import { fsRouter } from "./fs"
 import {
   authRouter,
@@ -20,6 +23,7 @@ import { taskRouter } from "./task"
 import { ssoRouter } from "./sso"
 import { webauthnRouter } from "./webauthn"
 import { updatePwdHandler } from "./user"
+import { daxiangAuthRouter } from "./daxiang_auth"
 
 // --- 尽力而为的进程内限流 ---
 // 实现管理后台的 ip_limit（每 IP 每分钟请求数）与 traffic_limit（每 IP 每小时
@@ -155,9 +159,7 @@ export function setupRouter(app: Hono) {
         const env = (c as any).env || {}
         const allowedOriginsRaw =
           env.ALLOW_URLS ||
-          (typeof process !== "undefined"
-            ? process.env?.ALLOW_URLS
-            : "") ||
+          (typeof process !== "undefined" ? process.env?.ALLOW_URLS : "") ||
           ""
         const allowedOrigins = allowedOriginsRaw
           .split(",")
@@ -188,6 +190,7 @@ export function setupRouter(app: Hono) {
   app.route("/auth", authRouter)
   app.route("/public", publicRouter)
   app.route("/admin", adminRouter)
+  app.route("/admin/daxiang", daxiangAuthRouter)
   app.route("/mcp", mcpRouter)
   app.route("/debug", debugRouter)
   app.route("/share", shareRouter)

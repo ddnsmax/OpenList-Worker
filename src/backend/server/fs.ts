@@ -1509,8 +1509,7 @@ fsRouter.post("/multipart/init", async (c) => {
       return c.json({ code: 200, message: "success", data: null })
     }
 
-    const chunkSize = clampChunkSize(rawChunk)
-    const totalChunks = Math.max(1, Math.ceil(size / chunkSize))
+    const requestedChunkSize = clampChunkSize(rawChunk)
 
     // 断点续传：同 owner + path+size 的未完成会话直接复用（按用户隔离）
     let session: MultipartSession
@@ -1526,6 +1525,14 @@ fsRouter.post("/multipart/init", async (c) => {
         name,
         size,
         md5,
+      )
+      const chunkSize = Math.max(
+        1,
+        Number(info?.chunkSize) || requestedChunkSize,
+      )
+      const totalChunks = Math.max(
+        1,
+        Number(info?.partCount) || Math.ceil(size / chunkSize),
       )
       session = {
         upload_id: newUploadId(),

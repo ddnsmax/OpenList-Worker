@@ -16,7 +16,9 @@
  */
 
 export const DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024 // 25MB
-export const DEFAULT_MAX_UPPART = 16 * 1024 * 1024 // 16MB
+// Daxiang's remote part endpoint accepts exactly 20MB chunks.  Keep the
+// service default at that boundary; deployments can still override MAX_UPPART.
+export const DEFAULT_MAX_UPPART = 20 * 1024 * 1024 // 20MB
 
 export function getUploadSizeLimit(c: any, part = false): number {
   const env = c?.env || {}
