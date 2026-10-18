@@ -103,15 +103,23 @@ async function loadSession(
 ): Promise<{ db: any; session: StoredSession }> {
   const db = await getDb(env)
   const backend = await getStoreBackend(env)
-  const raw = backend.get
-    ? await backend.get(`${SESSION_KEY_PREFIX}${String(id || "")}`, env)
-    : null
+  const key = `${SESSION_KEY_PREFIX}${String(id || "")}`
+  const read = async () => (backend.get ? await backend.get(key, env) : null)
+  let raw = await read()
   let session: StoredSession | undefined
-  try {
-    const parsed = JSON.parse(String(raw || "{}")) as StoredSession
-    if (parsed.kind === "daxiang-auth" && parsed.expires_at > Date.now())
-      session = parsed
-  } catch {}
+  const parse = (value: string | null) => {
+    try {
+      const parsed = JSON.parse(String(value || "{}")) as StoredSession
+      if (parsed.kind === "daxiang-auth" && parsed.expires_at > Date.now()) return parsed
+    } catch {}
+    return undefined
+  }
+  session = parse(raw)
+  if (!session) {
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    raw = await read()
+    session = parse(raw)
+  }
   if (!session) throw new Error("daxiang login session expired")
   return { db, session }
 }

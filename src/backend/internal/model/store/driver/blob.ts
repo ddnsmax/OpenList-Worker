@@ -77,7 +77,7 @@ export const blobDriver: Driver = {
     const esaBlob = getEsaBlobBinding(env)
     if (esaBlob) {
       try {
-        const obj = await esaBlob.get(key)
+        const obj = await esaBlob.get(key, { consistency: "strong" })
         if (!obj) return null
         return await obj.text()  // ESA Blob 返回对象，需要 .text()
       } catch (err) {
@@ -92,7 +92,7 @@ export const blobDriver: Driver = {
     
     try {
       // EdgeOne SDK 默认 type="text" 返回字符串
-      const v = await store.get(key)
+      const v = await store.get(key, { consistency: "strong" })
       if (v == null) return null
       return typeof v === "string" ? v : JSON.stringify(v)
     } catch (err) {
@@ -139,7 +139,7 @@ export const blobDriver: Driver = {
       let cursor: string | undefined
 
       do {
-        const result = await esaBlob.list({ prefix, cursor })
+        const result = await esaBlob.list({ prefix, cursor, consistency: "strong" })
         keys.push(...(result?.keys || []).map((k: any) => k.name))
         cursor = result?.cursor
       } while (cursor)
@@ -152,7 +152,11 @@ export const blobDriver: Driver = {
     if (!store) throw new Error("Blob not available")
     
     // 文档：list({ prefix, paginate: true }) 自动聚合所有分页，返回 { blobs: [{ key, etag }] }
-    const result = await store.list({ prefix, paginate: true })
+    const result = await store.list({
+      prefix,
+      paginate: true,
+      consistency: "strong",
+    })
     return (result?.blobs || []).map((b: any) => b.key)
   },
 
