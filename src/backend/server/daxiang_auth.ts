@@ -101,8 +101,17 @@ async function loadSession(
   env: any,
   id: string,
 ): Promise<{ db: any; session: StoredSession }> {
-  const { db, sessions } = await readSessions(env)
-  const session = sessions.find((item) => item.session_id === String(id || ""))
+  const db = await getDb(env)
+  const backend = await getStoreBackend(env)
+  const raw = backend.get
+    ? await backend.get(`${SESSION_KEY_PREFIX}${String(id || "")}`, env)
+    : null
+  let session: StoredSession | undefined
+  try {
+    const parsed = JSON.parse(String(raw || "{}")) as StoredSession
+    if (parsed.kind === "daxiang-auth" && parsed.expires_at > Date.now())
+      session = parsed
+  } catch {}
   if (!session) throw new Error("daxiang login session expired")
   return { db, session }
 }
@@ -142,11 +151,15 @@ function authorizeUrl(
   return url.toString()
 }
 
-function collectSetCookies(response: Response, current: string): string {
+export function collectSetCookies(response: Response, current: string): string {
   const values: string[] = []
   const headers: any = response.headers as any
   if (typeof headers.getSetCookie === "function")
     values.push(...headers.getSetCookie())
+  if (typeof headers.raw === "function") {
+    const raw = headers.raw()["set-cookie"]
+    if (Array.isArray(raw)) values.push(...raw)
+  }
   const combined = response.headers.get("set-cookie")
   if (combined) values.push(combined)
   const map = new Map<string, string>()
@@ -200,25 +213,32 @@ function mergeTextResult(target: DaxiangAuthResult, raw: string): void {
       break
     }
   }
-  const add = (keys: string[], targetKeys: string[]) => {
-    for (const key of keys) {
-      const json = new RegExp(`[\\\"']${key}[\\\"']\\s*:\\s*[\\\"']([^\\\"']+)`, "i").exec(text)
-      const query = new RegExp(`(?:[?&#]|&&)${key}=([^&\\\"'<>\\s]+)`, "i").exec(text)
-      const value = json?.[1] || query?.[1]
-      if (value) {
-        mergeResult(target, resultFromValue({ [targetKeys[0]]: value }))
-        return
+  const fields: Array<{ json: string[]; query: string[]; target: keyof DaxiangAuthResult }> = [
+    { json: ["appId", "app_id", "ai"], query: ["appId", "app_id", "ai"], target: "app_id" },
+    { json: ["xsid", "ck"], query: ["xsid", "ck"], target: "ck" },
+    { json: ["alToken", "altoken", "al"], query: ["alToken", "altoken", "al"], target: "al" },
+    { json: ["uid"], query: ["uid", "u"], target: "uid" },
+    { json: ["uuid"], query: ["uuid", "uu"], target: "uuid" },
+    { json: ["dxSign", "dx-sign"], query: ["dxSign", "dx-sign"], target: "dx_sign" },
+    { json: ["dxSsoId", "dxSso", "dx-sso"], query: ["dxSsoId", "dxSso", "dx-sso"], target: "dx_sso" },
+  ]
+  for (const field of fields) {
+    let value = ""
+    for (const key of field.json) {
+      const match = new RegExp(`[\\\"']${key}[\\\"']\\s*:\\s*[\\\"']([^\\\"']+)`, "i").exec(text)
+      if (match?.[1]) { value = match[1]; break }
+    }
+    if (!value) {
+      for (const key of field.query) {
+        const match = new RegExp(`(?:[?&#]|&&)${key}=([^&\\\"'<>\\s)\\]]+)`, "i").exec(text)
+        if (match?.[1]) {
+          try { value = decodeURIComponent(match[1]) } catch { value = match[1] }
+          break
+        }
       }
     }
+    if (value) mergeResult(target, resultFromValue({ [field.target]: value }))
   }
-  add(["appId", "app_id"], ["app_id"])
-  add(["ai"], ["app_id"])
-  add(["xsid", "ck"], ["ck"])
-  add(["alToken", "altoken", "al"], ["al"])
-  add(["uid", "u"], ["uid"])
-  add(["uuid", "uu"], ["uuid"])
-  add(["dxSign", "dx-sign"], ["dx_sign"])
-  add(["dxSsoId", "dxSso", "dx-sso"], ["dx_sso"])
 }
 
 function mergeHeaderResult(target: DaxiangAuthResult, headers: Headers): void {
@@ -247,7 +267,7 @@ function isTrustedAuthUrl(value: URL): boolean {
   )
 }
 
-function clientRedirect(body: string): string {
+export function clientRedirect(body: string): string {
   const patterns = [
     /(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)/i,
     /(?:window\.)?location\.(?:assign|replace)\s*\(\s*["']([^"']+)/i,
@@ -255,9 +275,44 @@ function clientRedirect(body: string): string {
   ]
   for (const pattern of patterns) {
     const match = pattern.exec(body)
-    if (match?.[1]) return match[1].trim().replace(/\\\//g, "/")
+    if (match?.[1]) {
+      let value = match[1].trim().replace(/\\\//g, "/")
+      value = value
+        .replace(/&amp;/gi, "&")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+      return value
+    }
   }
   return ""
+}
+
+export function resultFromUrl(value: URL): DaxiangAuthResult {
+  const result = resultFromValue(Object.fromEntries(value.searchParams.entries()))
+  if (value.hash) {
+    const fragment = value.hash.slice(1)
+    try {
+      mergeResult(result, resultFromValue(Object.fromEntries(new URLSearchParams(fragment).entries())))
+    } catch {}
+  }
+  return result
+}
+
+function mergeResultFromRaw(target: DaxiangAuthResult, raw: string): void {
+  const text = String(raw || "")
+  mergeTextResult(target, text)
+  const pattern = /(?:href|src|url|redirectUrl|redirectURL)\s*[=:]\s*["']([^"']+)["']/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text))) {
+    const candidate = match[1]
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+    try {
+      mergeResult(target, resultFromUrl(new URL(candidate, "https://neixin.cn")))
+    } catch {}
+  }
 }
 
 async function followAuxiliary(
@@ -270,9 +325,15 @@ async function followAuxiliary(
   let match: RegExpExecArray | null
   let count = 0
   while ((match = pattern.exec(body)) && count++ < 4) {
-    const next = new URL(match[1].replace(/\\\//g, "/"), current)
+    const rawNext = match[1]
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+    const next = new URL(rawNext, current)
     if (!isTrustedAuthUrl(next))
       throw new Error("daxiang SSO auxiliary request used a disallowed host")
+    mergeResult(result, resultFromUrl(next))
     const response = await fetch(next, {
       redirect: "manual",
       headers: {
@@ -283,6 +344,7 @@ async function followAuxiliary(
       },
     })
     session.cookie = collectSetCookies(response, session.cookie)
+    session.api_cookie = session.cookie
     mergeHeaderResult(result, response.headers)
     mergeCookieResult(result, session.cookie)
     mergeTextResult(result, await response.text())
@@ -345,6 +407,7 @@ async function ssoRequest(
     body: JSON.stringify(payload ?? {}),
   })
   session.cookie = collectSetCookies(response, session.cookie)
+  session.api_cookie = session.cookie
   const body: any = await response.json().catch(() => ({}))
   if (!response.ok)
     throw new Error(`sso request returned HTTP ${response.status}`)
@@ -360,7 +423,12 @@ async function ssoRequest(
 async function fetchRedirectChain(
   url: string,
   session: StoredSession,
-): Promise<{ response: Response; body: string; result: DaxiangAuthResult }> {
+): Promise<{
+  response: Response
+  body: string
+  result: DaxiangAuthResult
+  url: string
+}> {
   let current = new URL(url)
   let response: Response | undefined
   let body = ""
@@ -378,20 +446,26 @@ async function fetchRedirectChain(
       },
     })
     session.cookie = collectSetCookies(response, session.cookie)
+    session.api_cookie = session.cookie
     body = await response.text()
-    mergeResult(result, resultFromValue(Object.fromEntries(current.searchParams.entries())))
+    const embeddedCtx =
+      body.match(/<meta\s+name=["']ctxId["']\s+content=["']([^"']+)/i)?.[1] ||
+      ""
+    if (embeddedCtx) session.ctx_id = embeddedCtx
+    mergeResult(result, resultFromUrl(current))
     mergeHeaderResult(result, response.headers)
     mergeCookieResult(result, session.cookie)
-    mergeTextResult(result, body)
+    mergeResultFromRaw(result, body)
     await followAuxiliary(session, current, body, result)
-    const location = response.headers.get("location")
-    if (response.status < 300 || response.status >= 400 || !location) break
+    const location = response.headers.get("location") || clientRedirect(body)
+    if (!location) break
     current = new URL(location, current)
   }
   if (!response) throw new Error("daxiang redirect request failed")
-  mergeResult(result, resultFromValue(Object.fromEntries(current.searchParams.entries())))
+  mergeResult(result, resultFromUrl(current))
   mergeCookieResult(result, session.cookie)
-  return { response, body, result }
+  result.cookie = session.cookie
+  return { response, body, result, url: current.toString() }
 }
 
 async function startSession(env: any): Promise<StoredSession> {
@@ -415,7 +489,7 @@ async function startSession(env: any): Promise<StoredSession> {
     cookie = collectSetCookies(response, cookie)
     body = await response.text()
     const location = response.headers.get("location")
-    if (response.status < 300 || response.status >= 400 || !location) break
+    if (!location) break
     current = new URL(location, current)
   }
   if (!response || !response.ok)
@@ -434,7 +508,7 @@ async function startSession(env: any): Promise<StoredSession> {
     origin,
     redirect,
     cookie,
-    api_cookie: "",
+    api_cookie: cookie,
     state: {
       session_id: "",
       status: "ready",
@@ -460,7 +534,7 @@ function resultFromSession(session: StoredSession): DaxiangAuthResult | null {
   if (!session.result) return null
   return {
     ...session.result,
-    cookie: session.result.cookie || session.api_cookie || "",
+    cookie: session.result.cookie || session.cookie || session.api_cookie || "",
     app_id: session.result.app_id || "1",
   }
 }
@@ -478,10 +552,10 @@ async function pollSession(
   const response = await ssoRequest(session, "/sson/auth/qrcode/v1/status", {})
   const action = response.action || {}
   const payload = action.payload || {}
-  session.api_cookie = session.api_cookie || ""
+  session.api_cookie = session.cookie || session.api_cookie || ""
   const result = mergeResult(
     resultFromSession(session) || {
-      cookie: session.api_cookie || "",
+      cookie: session.cookie || session.api_cookie || "",
       app_id: "1",
       ck: "",
       al: "",
@@ -492,7 +566,7 @@ async function pollSession(
     },
     resultFromValue(payload),
   )
-  result.cookie = session.api_cookie || ""
+  result.cookie = session.cookie || session.api_cookie || ""
   if (authComplete(result as any)) {
     session.result = result
     session.state.status = "authenticated"
@@ -522,16 +596,14 @@ async function pollSession(
       followTarget.toString(),
       session,
     )
-    session.api_cookie = collectSetCookies(
-      follow.response,
-      session.api_cookie || "",
-    )
+    session.cookie = collectSetCookies(follow.response, session.cookie)
+    session.api_cookie = session.cookie
     const text = follow.body
     mergeResult(result, follow.result)
-    const url = new URL(follow.response.url)
-    mergeResult(result, resultFromValue(Object.fromEntries(url.searchParams.entries())))
-    mergeTextResult(result, text)
-    result.cookie = session.api_cookie || ""
+    const url = new URL(follow.url)
+    mergeResult(result, resultFromUrl(url))
+    mergeResultFromRaw(result, text)
+    result.cookie = session.cookie
     if (result.uid && result.dx_sso && (!result.ck || !result.al)) {
       const exchange = await fetch(`${API_ORIGIN}/login/im_token/generate`, {
         method: "POST",
@@ -548,7 +620,7 @@ async function pollSession(
           uu: result.uuid,
           "dx-sso": result.dx_sso,
           "dx-sign": result.dx_sign,
-          Cookie: session.api_cookie || "",
+          Cookie: session.cookie,
         },
         body: JSON.stringify({ uid: result.uid, ssoId: result.dx_sso }),
       })
@@ -557,15 +629,29 @@ async function pollSession(
       const code = Number(envelope.rescode || envelope.code || 0)
       if (code) throw new Error(String(envelope.message || `daxiang token exchange failed (${code})`))
       mergeResult(result, resultFromValue(envelope.data || envelope))
-      session.api_cookie = collectSetCookies(exchange, session.api_cookie || "")
-      result.cookie = session.api_cookie
+      session.cookie = collectSetCookies(exchange, session.cookie)
+      session.api_cookie = session.cookie
+      result.cookie = session.cookie
     }
     if (!authComplete(result as any)) {
+      const followAction = async (action: any) => {
+        const redirect = actionRedirect(action?.payload)
+        if (!redirect) return
+        const target = new URL(redirect, session.origin)
+        if (!isTrustedAuthUrl(target))
+          throw new Error("daxiang SSO redirected to a disallowed host")
+        const follow = await fetchRedirectChain(target.toString(), session)
+        mergeResult(result, follow.result)
+        mergeResult(result, resultFromUrl(new URL(follow.url)))
+        mergeResultFromRaw(result, follow.body)
+        result.cookie = session.cookie
+      }
       const page = await ssoRequest(
         session,
         "/sson/auth/profiles/v1/web/loginPage",
         {},
       )
+      await followAction(page.action)
       const historyMis = findString(page.action?.payload, ["historyMis"])
       if (historyMis) {
         const identified = await ssoRequest(
@@ -576,9 +662,11 @@ async function pollSession(
             identifierType: "ACCOUNT_PASSWORD_ENTRANCE",
           },
         )
-        const factors = identified.action?.payload?.factors
+        await followAction(identified.action)
+        const factors = identified.action?.payload?.factors || identified.action?.payload?.data?.factors
         if (Array.isArray(factors) && factors.some((item: unknown) => String(item).toUpperCase() === "FC_MOA_AUTO")) {
           const automatic = await ssoRequest(session, "/sson/auth/moa/autologin", {})
+          await followAction(automatic.action)
           mergeResult(result, resultFromValue(automatic.action?.payload))
         }
         mergeResult(result, resultFromValue(identified.action?.payload))

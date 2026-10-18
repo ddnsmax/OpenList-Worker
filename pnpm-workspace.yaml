@@ -3,6 +3,7 @@ packages:
 allowBuilds:
   "@swc/core": true
   core-js: true
+  esbuild: true
   "mpegts.js@https://codeload.github.com/OpenListTeam/mpegts.js/tar.gz/1e51e0f6f918cf08e05dfae9c7bfcf658d6b4ac2": true
 # cpu-features 是 ssh2 的可选原生加速依赖（C++ 模块，node-gyp 编译）。
 # CF Workers / EdgeOne 的边缘构建会把 ssh2 替换为空壳（build-edge.mjs 的
@@ -10,3 +11,5 @@ allowBuilds:
 # 跳过其编译可避免 install 阶段做无用的原生编译（拖慢甚至拖垮 CI 构建）。
 neverBuiltDependencies:
   - cpu-features
+onlyBuiltDependencies:
+  - esbuild
