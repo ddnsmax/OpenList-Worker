@@ -1,8 +1,0 @@
-node_modules
-dist
-/src/lang/*
-!/src/lang/en/
-.DS_Store
-.idea
-.test
-.codebuddy

@@ -45,12 +45,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 始终以仓库根目录为基准（无论从哪个 cwd 调用）
 const ROOT = path.resolve(__dirname, "..")
 const DEST = path.join(ROOT, "dist")
-const BUNDLED_FRONTEND = path.join(ROOT, "frontend")
+// Keep the repository small: only the Daxiang-specific frontend files live in
+// the Worker repo. They are overlaid onto the pinned official frontend during
+// the normal source build.
+const FRONTEND_OVERLAY = path.join(ROOT, "scripts", "frontend-overlay")
 
 const OFFICIAL_REPO_URL =
   process.env.FRONTEND_GIT_URL ||
   "https://github.com/OpenListTeam/OpenList-Frontend.git"
-const OFFICIAL_REPO_REF = process.env.FRONTEND_GIT_REF || "main"
+const OFFICIAL_REPO_REF = process.env.FRONTEND_GIT_REF || "v4.2.5"
 
 // 已发布 dist 的来源（默认路径）。ASSET_URLS 指向的 CDN 提供的正是这份 npm
 // 包内容，取它才能保证内容哈希与 CDN 同源（见文件头说明）。
@@ -99,6 +102,12 @@ function requireDist(src) {
   if (!fs.existsSync(path.join(src, "index.html"))) {
     throw new Error(`Frontend dist missing index.html: ${src}`)
   }
+}
+
+function applyFrontendOverlay(repo) {
+  if (!fs.existsSync(FRONTEND_OVERLAY)) return
+  console.log(`  Applying frontend overlay: ${FRONTEND_OVERLAY}`)
+  fs.cpSync(FRONTEND_OVERLAY, repo, { recursive: true, force: true })
 }
 
 /**
@@ -282,19 +291,8 @@ function buildLocalRepo(repo) {
   }
   const pm = detectPackageManager(abs)
   const cmd = resolvePmCommand(abs, pm)
-  const install = (extra = "") => run(`${cmd} install${extra}`, { cwd: abs })
-  try {
-    install()
-  } catch {
-    // 重试一次并加 --trust-lockfile：pnpm 11 默认对 lockfile 逐项重跑
-    // minimumReleaseAge / trustPolicy 供应链复核，registry manifest 缺少
-    // 平台子包时会误报（如 @crowdin/cli-*-arm64）。lockfile 来自刚克隆的
-    // 官方前端仓库（HTTPS + 官方分支），属于可信来源，跳过复核安全。
-    console.warn(
-      "  [fetch-frontend] pnpm install failed (lockfile supply-chain recheck or network issue), retrying once with --trust-lockfile...",
-    )
-    install(" --trust-lockfile")
-  }
+  applyFrontendOverlay(abs)
+  run(`${cmd} install`, { cwd: abs })
   fetchI18n(abs)
   // 关键修复：前后端默认同源部署，官方前端 VITE_API_URL 的语义是「API 服务器
   // 基础 URL」，正确值为 "/"（同源，config.ts 会转成 location.origin）。若外部
@@ -375,14 +373,6 @@ async function main() {
     return
   }
 
-  // Prefer the checked-in frontend fork so the Daxiang login UI and the
-  // Safari 12 legacy target are reproducible without a network fetch.
-  if (fs.existsSync(path.join(BUNDLED_FRONTEND, "package.json"))) {
-    console.log(`  Detected bundled frontend repo: ${BUNDLED_FRONTEND}`)
-    buildLocalRepo(BUNDLED_FRONTEND)
-    return
-  }
-
   // 2. 本地前端仓库目录（显式指定）
   const localRepo = process.env.FRONTEND_REPO
   if (localRepo) {
@@ -401,7 +391,10 @@ async function main() {
   // 4. 下载 npm 上已发布且兼容 Worker 初始化协议的 dist（默认）
   //    从 main 现构建的产物哈希与 CDN 不一致，会让路径 A 失效、npmmirror 之类的
   //    镜像完全不可用（详见文件头），故默认改为取已发布产物。
-  if (process.env.FRONTEND_BUILD_FROM_SOURCE !== "1") {
+  if (
+    process.env.FRONTEND_BUILD_FROM_SOURCE !== "1" &&
+    !fs.existsSync(FRONTEND_OVERLAY)
+  ) {
     if (await fetchPublishedDist()) return
   }
 
@@ -429,3 +422,6 @@ try {
   console.error("[fetch-frontend] Failed:", err?.message || err)
   process.exit(1)
 }
+
+
+
