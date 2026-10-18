@@ -42,16 +42,30 @@ function getEsaBlobBinding(env?: any): any | null {
   return null
 }
 
-/**
- * 获取 EdgeOne Blob Store（使用 SDK）
- */
+const edgeOneStores = new Map<string, any>()
+const edgeOneStoreLoads = new Map<string, Promise<any | null>>()
+
 async function getEdgeOneStore(namespace: string = "default"): Promise<any | null> {
-  try {
-    const { getStore } = await import("@edgeone/pages-blob")
-    return getStore(namespace)
-  } catch {
-    return null
-  }
+  const cached = edgeOneStores.get(namespace)
+  if (cached) return cached
+
+  const pending = edgeOneStoreLoads.get(namespace)
+  if (pending) return pending
+
+  const loading = (async () => {
+    try {
+      const { getStore } = await import("@edgeone/pages-blob")
+      const store = getStore({ name: namespace, consistency: "strong" } as any)
+      edgeOneStores.set(namespace, store)
+      return store
+    } catch {
+      return null
+    } finally {
+      edgeOneStoreLoads.delete(namespace)
+    }
+  })()
+  edgeOneStoreLoads.set(namespace, loading)
+  return loading
 }
 
 export const blobDriver: Driver = {
@@ -82,7 +96,7 @@ export const blobDriver: Driver = {
         return await obj.text()  // ESA Blob 返回对象，需要 .text()
       } catch (err) {
         console.warn(`[Blob] ESA get key="${key}" failed:`, err)
-        return null
+        throw err
       }
     }
     
@@ -97,7 +111,7 @@ export const blobDriver: Driver = {
       return typeof v === "string" ? v : JSON.stringify(v)
     } catch (err) {
       console.warn(`[Blob] EdgeOne get key="${key}" failed:`, err)
-      return null
+      throw err
     }
   },
 

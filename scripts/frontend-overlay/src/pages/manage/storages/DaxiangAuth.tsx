@@ -50,6 +50,7 @@ const DaxiangAuth = (props: Props) => {
   const [loginSource, setLoginSource] = createSignal("new")
   let timer: number | undefined
   let polling = false
+  let pollFailures = 0
 
   const stopPolling = () => {
     if (timer !== undefined) {
@@ -90,7 +91,9 @@ const DaxiangAuth = (props: Props) => {
   const request = async (path: string, data: Record<string, any>) => {
     const resp = (await r.post(path, data)) as Resp<AuthState>
     if (resp.code !== 200) {
-      throw new Error(resp.message || "请求失败")
+      const error: any = new Error(resp.message || "请求失败")
+      error.status = resp.code
+      throw error
     }
     applyState(resp.data)
     return resp.data
@@ -125,10 +128,19 @@ const DaxiangAuth = (props: Props) => {
       const value = await request("/admin/daxiang/auth/qr/status", {
         session_id: sessionID(),
       })
+      pollFailures = 0
       if (value.status === "expired" || value.authenticated) stopPolling()
     } catch (error: any) {
-      stopPolling()
-      notify.error(error?.message || "扫码状态查询失败")
+      const status = Number(error?.response?.status || error?.status)
+      const message = String(error?.response?.data?.message || error?.message || "")
+      if (status === 401 || /session expired/i.test(message)) {
+        stopPolling()
+        notify.error(message || "扫码会话已过期，请重新生成二维码")
+      } else {
+        pollFailures += 1
+        if (pollFailures === 3)
+          notify.warning("扫码状态暂时无法读取，页面将继续重试")
+      }
     } finally {
       polling = false
     }

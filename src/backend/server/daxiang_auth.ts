@@ -45,6 +45,16 @@ type StoredSession = {
   state: DaxiangAuthState
 }
 
+class DaxiangSessionError extends Error {
+  readonly statusCode: number
+
+  constructor(message: string, statusCode: number, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause })
+    this.name = "DaxiangSessionError"
+    this.statusCode = statusCode
+  }
+}
+
 function randomId(): string {
   const bytes = new Uint8Array(24)
   crypto.getRandomValues(bytes)
@@ -105,22 +115,39 @@ async function loadSession(
   const backend = await getStoreBackend(env)
   const key = `${SESSION_KEY_PREFIX}${String(id || "")}`
   const read = async () => (backend.get ? await backend.get(key, env) : null)
-  let raw = await read()
   let session: StoredSession | undefined
+  let sawExpired = false
+  let lastError: unknown
   const parse = (value: string | null) => {
     try {
       const parsed = JSON.parse(String(value || "{}")) as StoredSession
-      if (parsed.kind === "daxiang-auth" && parsed.expires_at > Date.now()) return parsed
+      if (parsed.kind === "daxiang-auth") {
+        if (parsed.expires_at > Date.now()) return parsed
+        sawExpired = true
+      }
     } catch {}
     return undefined
   }
-  session = parse(raw)
-  if (!session) {
-    await new Promise((resolve) => setTimeout(resolve, 120))
-    raw = await read()
-    session = parse(raw)
+  const delays = [0, 120, 300, 600]
+  for (let attempt = 0; attempt < delays.length && !session; attempt++) {
+    if (delays[attempt])
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
+    try {
+      session = parse(await read())
+      lastError = undefined
+    } catch (error) {
+      lastError = error
+    }
   }
-  if (!session) throw new Error("daxiang login session expired")
+  if (!session) {
+    if (sawExpired)
+      throw new DaxiangSessionError("daxiang login session expired", 502)
+    throw new DaxiangSessionError(
+      "daxiang login session temporarily unavailable",
+      503,
+      lastError,
+    )
+  }
   return { db, session }
 }
 
@@ -774,9 +801,10 @@ daxiangAuthRouter.post("/auth/qr/status", async (c) => {
     const next = await pollSession(c.env, session)
     return c.json({ code: 200, message: "success", data: stateFor(next) })
   } catch (error: any) {
+    const status = Number(error?.statusCode) || 502
     return c.json(
       { code: 502, message: error?.message || String(error), data: null },
-      502,
+      status as any,
     )
   }
 })

@@ -220,6 +220,30 @@ test("会话按 ID 读取，不依赖 Blob 列表及时可见；过期和取消�
   f.done()
 })
 
+test("EdgeOne Blob 会话短暂不可见时按完整 key 重试并继续认证", async (t) => {
+  const f = await fixture(t)
+  const session_id = await f.start()
+  const key = "openlist_daxiang_auth_" + session_id
+  const saved = f.data.get(key)!
+  let misses = 0
+  const originalGet = f.env.ESA_BLOB.get
+  f.env.ESA_BLOB.get = async (candidate: string) => {
+    if (candidate === key && misses++ < 2) return null
+    return originalGet(candidate)
+  }
+  f.steps.push({
+    path: "/sson/auth/qrcode/v1/status",
+    body: { action: { payload: credentials } },
+  })
+  const status = await f.request("/auth/qr/status", { session_id })
+  assert.equal(status.status, 200, JSON.stringify(status.body))
+  assert.equal(status.body.data.authenticated, true)
+  assert.equal(misses, 3)
+  assert.ok(f.data.has(key))
+  assert.ok(saved.includes('"kind":"daxiang-auth"'))
+  f.done()
+})
+
 test("未扫码、二维码过期、非法回调和令牌交换失败不允许浏览或保存", async (t) => {
   const f = await fixture(t)
   const session_id = await f.start()
